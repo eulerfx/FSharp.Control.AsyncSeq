@@ -615,15 +615,19 @@ module AsyncSeq =
 
 
 //let N = 10000000
-let N = 5000000
+//let N = 5000000
+let N = 1000000
 
 let generator state = async {
-  //printfn "gen=%A" state
   if state < N then
-      return Some (state, state + 1)
+    return Some (state, state + 1)
   else
-      return None }
+  return None }
 
+AsyncSeq.unfoldAsync generator 0
+|> AsyncSeq.chooseAsync (Some >> async.Return)
+|> AsyncSeq.iterAsync (ignore >> async.Return)
+|> Async.RunSynchronously
 
 //AsyncSeq.unfoldAsync generator 0
 //|> AsyncSeq.skip (N / 2)
@@ -638,14 +642,14 @@ let generator state = async {
 //|> AsyncSeq.chooseAsync (Some >> async.Return)
 //|> AsyncSeq.iterAsync (ignore >> async.Return)
 //|> Async.RunSynchronously
+  
 
-
-AsyncSeq.unfoldAsync generator 0
-|> AsyncSeq.skip3 N
-|> AsyncSeq.skip4 N
-//|> AsyncSeq.skip N
-|> AsyncSeq.iter ignore
-|> Async.RunSynchronously
+//AsyncSeq.unfoldAsync generator 0
+//|> AsyncSeq.skip3 N
+//|> AsyncSeq.skip4 N
+////|> AsyncSeq.skip N
+//|> AsyncSeq.iter ignore
+//|> Async.RunSynchronously
 
 //Real: 00:00:02.720, CPU: 00:00:02.718, GC gen0: 371, gen1: 2, gen2: 0
 
