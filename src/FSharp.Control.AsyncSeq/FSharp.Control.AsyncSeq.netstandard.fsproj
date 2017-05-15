@@ -1,0 +1,17 @@
+<Project Sdk="FSharp.NET.Sdk;Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard1.6</TargetFramework>
+    <AssemblyName>FSharp.Control.AsyncSeq</AssemblyName>
+    <PackageId>FSharp.Control.AsyncSeq</PackageId>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AsyncSeq.fsi" />
+    <Compile Include="AsyncSeq.fs" />
+    <None Include="paket.references" />
+    <None Include="paket.template" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="3.0.*" />
+    <PackageReference Include="FSharp.NET.Sdk" Version="1.0.*" PrivateAssets="All" />
+  </ItemGroup>
+</Project>
