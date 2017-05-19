@@ -296,6 +296,32 @@ Target "Release" (fun _ ->
 
 Target "BuildPackage" DoNothing
 
+
+// --------------------------------------------------------------------------------------
+// .net core
+
+
+Target "NuGetCore" (fun _ ->
+    // Rebuild project and pack (create NuGet package)
+    let nunitDir, nunitProj = "src/FSharp.Control.AsyncSeq", "FSharp.Control.AsyncSeq.netstandard.fsproj"
+    DotNetCli.Restore    (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
+    DotNetCli.Build      (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
+    DotNetCli.RunCommand (fun c -> { c with WorkingDir = nunitDir})
+        (sprintf "pack \"%s\" /p:Version=%s --configuration Release" nunitProj (release.NugetVersion))
+
+    // Restore dotnet-mergenupkg and merge two packages
+    let toolsDir = "tools/"
+    DotNetCli.Restore    (fun c -> { c with WorkingDir = toolsDir})
+
+    let nupkg = sprintf "FSharp.Control.AsyncSeq.%s.nupkg" release.NugetVersion
+    DotNetCli.RunCommand (fun c -> { c with WorkingDir = toolsDir})
+        (sprintf "mergenupkg --source \"./../bin/%s\" --other \"./../src/FSharp.Control.AsyncSeq/bin/Release/%s\" --framework netstandard1.6" nupkg nupkg)
+)
+
+
+
+
+
 // --------------------------------------------------------------------------------------
 // Run all targets by default. Invoke 'build <Target>' to override
 

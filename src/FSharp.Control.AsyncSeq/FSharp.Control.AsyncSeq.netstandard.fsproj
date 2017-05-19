@@ -13,5 +13,6 @@
   <ItemGroup>
     <PackageReference Include="FSharp.Core" Version="3.0.*" />
     <PackageReference Include="FSharp.NET.Sdk" Version="1.0.*" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.NETCore.Portable.Compatibility" Version="1.0.1" />
   </ItemGroup>
 </Project>
