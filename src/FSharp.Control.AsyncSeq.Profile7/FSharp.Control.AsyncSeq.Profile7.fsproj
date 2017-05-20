@@ -40,6 +40,7 @@
     <MinimumVisualStudioVersion Condition="'$(MinimumVisualStudioVersion)' == ''">11</MinimumVisualStudioVersion>
   </PropertyGroup>
   <Import Project="..\..\.paket\paket.targets" />
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\FSharp\Microsoft.Portable.FSharp.Targets" />
   <ItemGroup>
     <Compile Include="../FSharp.Control.AsyncSeq/AsyncSeq.fsi">
       <Link>AsyncSeq.fsi</Link>
@@ -48,8 +49,13 @@
       <Link>AsyncSeq.fs</Link>
     </Compile>
     <None Include="paket.references" />
+    <Content Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="dotnet-mergenupkg">
+      <HintPath>..\..\packages\dotnet-mergenupkg.1.0.1\lib\netcoreapp1.0\dotnet-mergenupkg.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="mscorlib" />
     <Reference Include="FSharp.Core">
       <Name>FSharp.Core</Name>
@@ -59,5 +65,4 @@
     <Reference Include="System" />
     <Reference Include="System.Core" />
   </ItemGroup>
-  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\FSharp\Microsoft.Portable.FSharp.Targets" />
 </Project>

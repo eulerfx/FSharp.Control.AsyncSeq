@@ -2,7 +2,7 @@
 // FAKE build script
 // --------------------------------------------------------------------------------------
 
-#r @"packages/FAKE/tools/FakeLib.dll"
+#r @"packages/FAKE.4.61.2/tools/FakeLib.dll"
 
 open Fake
 open Fake.Git
@@ -301,21 +301,65 @@ Target "BuildPackage" DoNothing
 // .net core
 
 
-Target "NuGetCore" (fun _ ->
-    // Rebuild project and pack (create NuGet package)
-    let nunitDir, nunitProj = "src/FSharp.Control.AsyncSeq", "FSharp.Control.AsyncSeq.netstandard.fsproj"
-    DotNetCli.Restore    (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
-    DotNetCli.Build      (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
-    DotNetCli.RunCommand (fun c -> { c with WorkingDir = nunitDir})
-        (sprintf "pack \"%s\" /p:Version=%s --configuration Release" nunitProj (release.NugetVersion))
+//Target "NuGetCore" (fun _ ->
+//    // Rebuild project and pack (create NuGet package)
+//    let nunitDir, nunitProj = "src/FSharp.Control.AsyncSeq", "FSharp.Control.AsyncSeq.netstandard.fsproj"
+//    DotNetCli.Restore    (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
+//    DotNetCli.Build      (fun c -> { c with WorkingDir = nunitDir; Project = nunitProj })
+//    DotNetCli.RunCommand (fun c -> { c with WorkingDir = nunitDir})
+//        (sprintf "pack \"%s\" /p:Version=%s --configuration Release" nunitProj (release.NugetVersion))
+//
+//    // Restore dotnet-mergenupkg and merge two packages
+//    let toolsDir = "tools/"
+//    DotNetCli.Restore    (fun c -> { c with WorkingDir = toolsDir})
+//
+//    let nupkg = sprintf "FSharp.Control.AsyncSeq.%s.nupkg" release.NugetVersion
+//    DotNetCli.RunCommand (fun c -> { c with WorkingDir = toolsDir})
+//        (sprintf "mergenupkg --source \"./../bin/%s\" --other \"./../src/FSharp.Control.AsyncSeq/bin/Release/%s\" --framework netstandard1.6" nupkg nupkg)
+//)
 
-    // Restore dotnet-mergenupkg and merge two packages
+
+// .NET Core SDK and .NET Core
+
+let assertExitCodeZero x = if x = 0 then () else failwithf "Command failed with exit code %i" x
+
+//let netcoreSrcFiles = !! "src/**/project.json" |> Seq.toList
+//let netcoreTestFiles = !! "tests/**/project.json" |> Seq.toList
+
+let workingDir, projFile = "src/FSharp.Control.AsyncSeq", "FSharp.Control.AsyncSeq.netstandard.fsproj"
+
+//Target "SetVersionInProjectJSON" (fun _ ->
+//    for proj in netcoreSrcFiles @ netcoreTestFiles do
+//        DotNetCli.SetVersionInProjectJson release.NugetVersion proj
+//)
+
+Target "Build.NetCore" (fun _ ->
+    DotNetCli.Restore (fun x -> { x with WorkingDir = workingDir ; Project = projFile })
+    DotNetCli.Build (fun x -> { x with WorkingDir = workingDir ; Project = projFile })
+)
+
+//Target "RunTests.NetCore" (fun _ ->
+//  DotNetCli.Test id netcoreTestFiles
+//)
+
+let isDotnetSDKInstalled = DotNetCli.isInstalled()
+
+Target "NuGet.AddNetCore" (fun _ ->
+    if not isDotnetSDKInstalled then failwith "You need to install .NET core to publish NuGet packages"
+
+    DotNetCli.RunCommand (fun c -> { c with WorkingDir = workingDir})
+        (sprintf "pack \"%s\" /p:Version=%s --configuration Release" projFile (release.NugetVersion))
+    //DotNetCli.Pack (fun x -> { x with WorkingDir = workingDir ; Project = projFile })
+
+    //let nupkg = sprintf "../../bin/FSharp.Control.AsyncSeq.%s.nupkg" (release.NugetVersion)
+    let netcoreNupkg = sprintf "bin/Release/FSharp.Control.AsyncSeq.%s.nupkg" (release.NugetVersion)
+
     let toolsDir = "tools/"
-    DotNetCli.Restore    (fun c -> { c with WorkingDir = toolsDir})
-
     let nupkg = sprintf "FSharp.Control.AsyncSeq.%s.nupkg" release.NugetVersion
-    DotNetCli.RunCommand (fun c -> { c with WorkingDir = toolsDir})
-        (sprintf "mergenupkg --source \"./../bin/%s\" --other \"./../src/FSharp.Control.AsyncSeq/bin/Release/%s\" --framework netstandard1.6" nupkg nupkg)
+//    DotNetCli.RunCommand (fun c -> { c with WorkingDir = toolsDir })
+//        (sprintf "mergenupkg --source \"./../bin/%s\" --other \"./../src/FSharp.Control.AsyncSeq/bin/Release/%s\" --framework netstandard1.6" nupkg nupkg)
+
+    Shell.Exec("dotnet", sprintf """mergenupkg --source "%s" --other "%s" --framework netstandard1.6 """ nupkg netcoreNupkg, "src/FSharp.Control.AsyncSeq/") |> assertExitCodeZero
 )
 
 
@@ -335,6 +379,8 @@ Target "All" DoNothing
   =?> ("GenerateDocs",isLocalBuild)
   ==> "All"
   =?> ("ReleaseDocs",isLocalBuild)
+
+"Build.NetCore" ==> "NuGet.AddNetCore"
 
 "All" 
 //#if MONO
