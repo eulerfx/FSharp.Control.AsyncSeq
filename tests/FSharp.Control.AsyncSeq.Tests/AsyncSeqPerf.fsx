@@ -5,152 +5,268 @@
 open System
 open System.Diagnostics
 open FSharp.Control
+open System.Collections.Generic
+open System.Collections.Concurrent
+open System.Runtime.ExceptionServices
 
-let N = 1000000
+[<AutoOpen>]
+module AsyncEx =
+  
+  open System.Threading
+  open System.Threading.Tasks
 
-let run (test:int -> Async<_>) =
-  let sw = Stopwatch.StartNew()
-  test N |> Async.RunSynchronously |> ignore
-  sw.Stop()
+  type Async with
+
+    static member bind (f:'a -> Async<'b>) (a:Async<'a>) : Async<'b> = async.Bind(a, f)
+
+    static member startThreadPoolWithContinuations (a:Async<'a>, ok:'a -> unit, err:exn -> unit, cnc:OperationCanceledException -> unit, ct:CancellationToken) =
+      let a = Async.SwitchToThreadPool () |> Async.bind (fun _ -> a)
+      Async.StartWithContinuations (a, ok, err, cnc, ct)
+
+    static member chooseChoice (a:Async<'a>) (b:Async<'b>) : Async<Choice<'a * Async<'b>, 'b * Async<'a>>> = async {
+      let! ct = Async.CancellationToken
+      return!
+        Async.FromContinuations <| fun (ok,err,cnc) ->
+          let state = ref 0
+          let resA = TaskCompletionSource<_>()
+          let resB = TaskCompletionSource<_>()
+          let inline oka a =
+            if (Interlocked.CompareExchange(state, 1, 0) = 0) then 
+              ok (Choice1Of2 (a, resB.Task |> Async.AwaitTask))
+            else
+              resA.SetResult a
+          let inline okb b =
+            if (Interlocked.CompareExchange(state, 1, 0) = 0) then 
+              ok (Choice2Of2 (b, resA.Task |> Async.AwaitTask))
+            else
+              resB.SetResult b
+          let inline err (ex:exn) =
+            if (Interlocked.CompareExchange(state, 1, 0) = 0) then 
+              err ex
+          let inline cnc ex =
+            if (Interlocked.CompareExchange(state, 1, 0) = 0) then
+              cnc ex
+          Async.startThreadPoolWithContinuations (a, oka, err, cnc, ct)
+          Async.startThreadPoolWithContinuations (b, okb, err, cnc, ct) }
+
+    static member internal chooseTasks (a:Task<'T>) (b:Task<'U>) : Async<Choice<'T * Task<'U>, 'U * Task<'T>>> =
+      async { 
+          let! ct = Async.CancellationToken
+          let i = Task.WaitAny( [| (a :> Task);(b :> Task) |],ct)
+          if i = 0 then return (Choice1Of2 (a.Result, b))
+          elif i = 1 then return (Choice2Of2 (b.Result, a)) 
+          else return! failwith (sprintf "unreachable, i = %d" i) }
+
+//    static member internal chooseTasksAsync (a:Task<'T>) (b:Task<'U>) : Async<Choice<'T * Task<'U>, 'U * Task<'T>>> =
+//      async {
+//          let at = a.ContinueWith(fun (t:Task<'T>) -> Choice1Of2 t.Result)
+//          let bt = b.ContinueWith(fun (t:Task<'U>) -> Choice2Of2 t.Result)
+//          let! i = Task.WhenAny ([| at ; bt |]) |> Async.AwaitTask
+//          match i.Result with
+//          | Choice1Of2 x -> return Choice1Of2 (x, b)
+//          | Choice2Of2 x -> return Choice2Of2 (x, a) }
+
+    static member internal chooseTasksAsync (a:Task<'T>) (b:Task<'U>) : Async<Choice<'T * Task<'U>, 'U * Task<'T>>> =
+      async { 
+          let ta, tb = a :> Task, b :> Task
+          let! i = Task.WhenAny( ta, tb ) |> Async.AwaitTask
+          if i = ta then return (Choice1Of2 (a.Result, b))
+          elif i = tb then return (Choice2Of2 (b.Result, a)) 
+          else return! failwith "unreachable" }
+
+module AsyncSeq =
+
+  let bufferByCountAndTime (bufferSize:int) (timeoutMs:int) (source:AsyncSeq<'T>) : AsyncSeq<'T[]> = 
+    if (bufferSize < 1) then invalidArg "bufferSize" "must be positive"
+    if (timeoutMs < 1) then invalidArg "timeoutMs" "must be positive"
+    asyncSeq {
+      let buffer = new ResizeArray<_>()
+      use ie = source.GetEnumerator()
+      let rec loop remainingItem remainingTime = asyncSeq {
+        let! move = 
+          match remainingItem with
+          | Some rem -> async.Return rem
+          | None -> Async.StartChildAsTask(ie.MoveNext())
+        let t = Stopwatch.GetTimestamp()
+        let! time = Async.StartChildAsTask(Async.Sleep (max 0 remainingTime))
+        let! moveOr = Async.chooseTasks move time
+        let delta = int ((Stopwatch.GetTimestamp() - t) * 1000L / Stopwatch.Frequency)
+        match moveOr with
+        | Choice1Of2 (None, _) -> 
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+        | Choice1Of2 (Some v, _) ->
+          buffer.Add v
+          if buffer.Count = bufferSize then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop None timeoutMs
+          else
+            yield! loop None (remainingTime - delta)
+        | Choice2Of2 (_, rest) ->
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop (Some rest) timeoutMs
+          else
+            yield! loop (Some rest) timeoutMs
+      }
+      yield! loop None timeoutMs
+    }
+
+  let bufferByCountAndTime2 (bufferSize:int) (timeoutMs:int) (source:AsyncSeq<'T>) : AsyncSeq<'T[]> = 
+    if (bufferSize < 1) then invalidArg "bufferSize" "must be positive"
+    if (timeoutMs < 1) then invalidArg "timeoutMs" "must be positive"
+    asyncSeq {
+      let buffer = new ResizeArray<_>()
+      use ie = source.GetEnumerator()
+      let rec loop remainingItem remainingTime = asyncSeq {
+        let! move = 
+          match remainingItem with
+          | Some rem -> async.Return rem
+          | None -> Async.StartChildAsTask(ie.MoveNext())
+        let t = Stopwatch.GetTimestamp()
+        let! time = Async.StartChildAsTask(Async.Sleep (max 0 remainingTime))
+        let! moveOr = Async.chooseTasksAsync move time
+        let delta = int ((Stopwatch.GetTimestamp() - t) * 1000L / Stopwatch.Frequency)
+        match moveOr with
+        | Choice1Of2 (None, _) -> 
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+        | Choice1Of2 (Some v, _) ->
+          buffer.Add v
+          if buffer.Count = bufferSize then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop None timeoutMs
+          else
+            yield! loop None (remainingTime - delta)
+        | Choice2Of2 (_, rest) ->
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop (Some rest) timeoutMs
+          else
+            yield! loop (Some rest) timeoutMs
+      }
+      yield! loop None timeoutMs
+    }
+
+  let bufferByCountAndTime3 (bufferSize:int) (timeoutMs:int) (source:AsyncSeq<'T>) : AsyncSeq<'T[]> = 
+    if (bufferSize < 1) then invalidArg "bufferSize" "must be positive"
+    if (timeoutMs < 1) then invalidArg "timeoutMs" "must be positive"
+    asyncSeq {
+      let buffer = new ResizeArray<_>()
+      use ie = source.GetEnumerator()
+      let rec loop (remainingItem:Async<'T option> option) remainingTime = asyncSeq {
+        let move = 
+          match remainingItem with
+          | Some rem -> rem
+          | None -> ie.MoveNext()
+        let t = Stopwatch.GetTimestamp()
+        let time = Async.Sleep (max 0 remainingTime)
+        let! moveOr = Async.chooseChoice move time
+        let delta = int ((Stopwatch.GetTimestamp() - t) * 1000L / Stopwatch.Frequency)
+        match moveOr with
+        | Choice1Of2 (None, _) -> 
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+        | Choice1Of2 (Some v, _) ->
+          buffer.Add v
+          if buffer.Count = bufferSize then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop None timeoutMs
+          else
+            yield! loop None (remainingTime - delta)
+        | Choice2Of2 (_, rest) ->
+          if buffer.Count > 0 then
+            yield buffer.ToArray()
+            buffer.Clear()
+            yield! loop (Some rest) timeoutMs
+          else
+            yield! loop (Some rest) timeoutMs
+      }
+      yield! loop None timeoutMs
+    }
+
+//  let bufferByCountAndTime2 (bufferSize:int) (timeoutMs:int) (source:AsyncSeq<'T>) : AsyncSeq<'T[]> = 
+//    if (bufferSize < 1) then invalidArg "bufferSize" "must be positive"
+//    if (timeoutMs < 1) then invalidArg "timeoutMs" "must be positive"
+//    asyncSeq {      
+//      use mb = MailboxProcessor.Start (fun _ -> async { return () })
+//      let buf = ResizeArray<_>(bufferSize)
+//      let rec loop () = async {
+//        let! msg = mb.Receive ()
+//
+//        
+//        }
+//
+//
+//      ()
+//
+//    }
+
+
 
 (*
 
-------------------------------------------------------------------------------------------------------------------------
--- append generator
-N=5000
-unfoldIter
-Real: 00:00:03.587, CPU: 00:00:03.578, GC gen0: 346, gen1: 2, gen2: 0
-Real: 00:00:00.095, CPU: 00:00:00.093, GC gen0: 4, gen1: 2, gen2: 0 (gain due to AsyncGenerator)
-------------------------------------------------------------------------------------------------------------------------
-N=1000000
-unfoldChooseIter
-Real: 00:00:10.818, CPU: 00:00:10.828, GC gen0: 1114, gen1: 3, gen2: 0
-------------------------------------------------------------------------------------------------------------------------
-N=1000000
-unfoldIter
-Real: 00:00:08.565, CPU: 00:00:08.562, GC gen0: 889, gen1: 2, gen2: 0
-------------------------------------------------------------------------------------------------------------------------
--- handcoded unfold
-N=1000000
+let N = 100000L
+let bufferSize = 100
+let bufferTime = 1000
+let P = 10
 
-unfoldIter
-Real: 00:00:08.514, CPU: 00:00:08.562, GC gen0: 890, gen1: 3, gen2: 1
-Real: 00:00:00.878, CPU: 00:00:00.875, GC gen0: 96, gen1: 2, gen2: 0 (gain due to hand-coded unfold)
+//Real: 00:02:03.090, CPU: 00:04:31.515, GC gen0: 917, gen1: 864, gen2: 53
+//Real: 00:01:27.512, CPU: 00:03:20.750, GC gen0: 986, gen1: 914, gen2: 59
+//Real: 00:01:16.668, CPU: 00:03:16.109, GC gen0: 677, gen1: 607, gen2: 70
 
-replicate
-Real: 00:00:01.530, CPU: 00:00:01.531, GC gen0: 156, gen1: 1, gen2: 0
-Real: 00:00:00.926, CPU: 00:00:00.937, GC gen0: 97, gen1: 2, gen2: 0
+*)
 
-------------------------------------------------------------------------------------------------------------------------
--- fused unfold (AsyncSeqOp)
+(*
 
-unfoldChooseIter
-Real: 00:00:02.979, CPU: 00:00:02.968, GC gen0: 321, gen1: 2, gen2: 0
-Real: 00:00:00.913, CPU: 00:00:00.906, GC gen0: 115, gen1: 2, gen2: 0 (gain due to fused unfold and choose via AsyncSeqOp)
-------------------------------------------------------------------------------------------------------------------------
+let N = 10000L
+let bufferSize = 100
+let bufferTime = 1000
+let P = 100
+
+//Real: 00:02:46.513, CPU: 00:03:01.734, GC gen0: 993, gen1: 927, gen2: 66
+//Real: 00:00:52.050, CPU: 00:02:03.796, GC gen0: 996, gen1: 917, gen2: 69
+//Real: 00:00:42.190, CPU: 00:01:29.156, GC gen0: 678, gen1: 605, gen2: 72
+
+*)
 
 
-------------------------------------------------------------------------------------------------------------------------
--- bind via AsyncGenerator (N=10000)
+(*
 
-Real: 00:01:09.394, CPU: 00:01:09.109, GC gen0: 4994, gen1: 2661, gen2: 0
+let N = 100L
+let bufferSize = 100
+let bufferTime = 1000
+let P = 1000
 
-Real: 00:00:00.097, CPU: 00:00:00.109, GC gen0: 5, gen1: 2, gen2: 0
-Real: 00:00:04.667, CPU: 00:00:04.671, GC gen0: 478, gen1: 2, gen2: 0 (N=1000000)
-
-Real: 00:00:00.658, CPU: 00:00:00.656, GC gen0: 80, gen1: 1, gen2: 0 (N=1000000) via unfoldAsync
-
-------------------------------------------------------------------------------------------------------------------------
+// ???
+//Real: 00:00:04.838, CPU: 00:00:09.859, GC gen0: 103, gen1: 97, gen2: 6
+//Real: 00:00:03.235, CPU: 00:00:06.515, GC gen0: 66, gen1: 62, gen2: 4
 
 
 *)
 
-let unfoldIter (N:int) =
-  let generator state = async {
-    if state < N then
-      return Some (state, state + 1)
-    else
-      return None }
-  AsyncSeq.unfoldAsync generator 0
-  |> AsyncSeq.iterAsync (ignore >> async.Return)
 
-let unfoldChooseIter (N:int) =
-  let generator state = async {
-    if state < N then
-      return Some (state, state + 1)
-    else
-      return None }
-  AsyncSeq.unfoldAsync generator 0
-  |> AsyncSeq.chooseAsync (Some >> async.Return)
-  |> AsyncSeq.iterAsync (ignore >> async.Return)
+let N = 100L
+let bufferSize = 100
+let bufferTime = 1000
+let P = 1000
 
-let replicate (N:int) =
-  AsyncSeq.replicate N ()
-  |> AsyncSeq.iterAsync (ignore >> async.Return)
+let go n = async {
+  return!
+    AsyncSeq.init n id
+    |> AsyncSeq.mapAsync (fun i -> async {
+      do! Async.Sleep 0
+      return i })
+    |> AsyncSeq.bufferByCountAndTime2 bufferSize bufferTime
+    |> AsyncSeq.iter ignore
+}
 
-
-let bind cnt =
-  let rec generate cnt = asyncSeq {
-    if cnt = 0 then () else
-    let! v = async.Return 1
-    yield v
-    yield! generate (cnt-1) }
-  generate cnt |> AsyncSeq.iter ignore
-
-let bindUnfold =
-  AsyncSeq.unfoldAsync (fun cnt -> async {
-    if cnt = 0 then return None
-    else
-      let! v = async.Return 1
-      return Some (v, cnt - 1) })
-  >> AsyncSeq.iter ignore
-
-
-
-let collect n = 
-  AsyncSeq.replicate n ()
-  |> AsyncSeq.collect (fun () -> AsyncSeq.singleton ())
-  |> AsyncSeq.iter ignore
-
-
-//run unfoldIter
-//run unfoldChooseIter
-//run replicate
-//run bind
-//run bindUnfold
-//run collect
-
-let Y = Choice1Of2
-let S = Choice2Of2
-  
-let timeMs = 500
-
-let inp0 = [ ]
-let exp0 = [ ]
-
-let inp1 = [ Y 1 ; Y 2 ; S timeMs ; Y 3 ; Y 4 ; S timeMs ; Y 5 ; Y 6 ]
-let exp1 = [ [1;2] ; [3;4] ; [5;6] ]
-
-//  let inp2 : Choice<int, int> list = [ S 500 ]
-//  let exp2 : int list list = [ [] ; [] ; [] ; []  ]
-
-let toSeq (xs:Choice<int, int> list) = asyncSeq {
-  for x in xs do
-    match x with
-    | Choice1Of2 v -> yield v
-    | Choice2Of2 s -> do! Async.Sleep s }    
-
-for (inp,exp) in [ (inp0,exp0) ; (inp1,exp1) ] do
-
-  let actual = 
-    toSeq inp
-    |> AsyncSeq.bufferByTime (timeMs - 5)
-    |> AsyncSeq.map List.ofArray
-    |> AsyncSeq.toList
-  
-  printfn "actual=%A expected=%A" actual exp
-
-  //let ls = toSeq inp |> AsyncSeq.toList
-  //let actualLs = actual |> List.concat
-
-  
+Seq.init P id
+|> Seq.map (fun _ -> go N)
+|> Async.Parallel
+|> Async.RunSynchronously
