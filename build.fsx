@@ -1,67 +1,85 @@
 // --------------------------------------------------------------------------------------
-// FAKE build script
+// FAKE build script 
 // --------------------------------------------------------------------------------------
 
-#r @"packages/build/FAKE/tools/FakeLib.dll"
+#I "packages/build/FAKE/tools"
+#r "packages/build/FAKE/tools/FakeLib.dll"
 
-open Fake
-open Fake.Git
-open Fake.ReleaseNotesHelper
 open System
 open System.IO
+open Fake 
+open Fake.Git
+open Fake.ReleaseNotesHelper
+open Fake.AssemblyInfoFile
+open Fake.Testing
 
 // --------------------------------------------------------------------------------------
-// START TODO: Provide project-specific details below
+// Information about the project to be used at NuGet and in AssemblyInfo files
 // --------------------------------------------------------------------------------------
 
-// The name of the project
-// (used by attributes in AssemblyInfo, name of a NuGet package and directory in 'src')
-let project = "src/FSharp.Control.AsyncSeq"
+let project = "FSharp.Control.AsyncSeq"
 
-// File system information 
-let solutionFile = "FSharp.Control.AsyncSeq.sln"
-
-let buildDir = "bin"
-
-// Git configuration (used for publishing documentation in gh-pages branch)
-// The profile where the project is posted
-let gitOwner = "fsprojects" 
-let gitHome = "https://github.com/" + gitOwner
-
-// The name of the project on GitHub
+let gitOwner = "fsprojects"
 let gitName = "FSharp.Control.AsyncSeq"
+let gitHome = "https://github.com/" + gitOwner
+let gitRaw = "https://raw.github.com/" + gitOwner
 
-// The url for the raw files hosted
-let gitRaw = environVarOrDefault "gitRaw" "https://raw.github.com/fsprojects"
+let artifacts = __SOURCE_DIRECTORY__ @@ "artifacts"
+let netCoreSrcFiles = !! "src/*.fsproj"
+let netCoreTestFiles = !! "tests/*.fsproj"
+//let testAssemblies = !! "bin/Release/net40/*.Tests.dll"
+
+
+//let isDotnetSDKInstalled = DotNetCli.isInstalled()
+let configuration = environVarOrDefault "Configuration" "Release"
+//let isTravisCI = environVarOrDefault "TRAVIS" "false" |> Boolean.Parse
+
+//// --------------------------------------------------------------------------------------
+//// The rest of the code is standard F# build script 
+//// --------------------------------------------------------------------------------------
+
+//// Read release notes & version info from RELEASE_NOTES.md
+Environment.CurrentDirectory <- __SOURCE_DIRECTORY__
+let release = parseReleaseNotes (IO.File.ReadAllLines "RELEASE_NOTES.md")
+let nugetVersion = release.NugetVersion
+
+Target "BuildVersion" (fun _ ->
+    Shell.Exec("appveyor", sprintf "UpdateBuild -Version \"%s\"" nugetVersion) |> ignore
+)
+
+// Generate assembly info files with the right version & up-to-date information
+Target "AssemblyInfo" (fun _ ->
+  let fileName = "./src/FSharp.Control.AsyncSeq/AssemblyInfo.fs"
+  CreateFSharpAssemblyInfo fileName
+      [ Attribute.Version release.AssemblyVersion
+        Attribute.FileVersion release.AssemblyVersion ] 
+)
+
 
 // --------------------------------------------------------------------------------------
-// END TODO: The rest of the file includes standard build steps
-// --------------------------------------------------------------------------------------
-
-// Read additional information from the release notes document
-let release = LoadReleaseNotes "RELEASE_NOTES.md"
-
-// --------------------------------------------------------------------------------------
-// Clean build results
+// Clean build results & restore NuGet packages
 
 Target "Clean" (fun _ ->
-    CleanDirs ["bin"; "temp"]
+    CleanDirs [ "./bin" @@ configuration ; artifacts ]
 )
 
-Target "CleanDocs" (fun _ ->
-    CleanDirs ["docs/output"]
-)
+//
+//// --------------------------------------------------------------------------------------
+//// Build library & test project
 
-// --------------------------------------------------------------------------------------
-// Build library & test project
 
 Target "Build" (fun _ ->
-    DotNetCli.Build (fun p ->
-        { p with Project = solutionFile })
+    // Build the rest of the project
+    { BaseDirectory = __SOURCE_DIRECTORY__
+      Includes = [ project + ".sln" ]
+      Excludes = [] } 
+    |> MSBuild "" "Build" ["Configuration", configuration]
+    |> Log "AppBuild-Output: "
 )
 
+
 // --------------------------------------------------------------------------------------
-// Run the unit tests using test runner
+// Run the unit tests using test runner & kill test runner when complete
 
 Target "RunTests" (fun _ ->
     try
@@ -73,208 +91,129 @@ Target "RunTests" (fun _ ->
         AppVeyor.UploadTestResultsXml AppVeyor.TestResultsType.NUnit "bin"
 )
 
-// --------------------------------------------------------------------------------------
-// Build a NuGet package
+//
+//// --------------------------------------------------------------------------------------
+//// Build a NuGet package
 
-Target "NuGet" (fun _ ->
-    Paket.Pack (fun p ->
-        { p with
-            OutputPath = buildDir
+Target "NuGet.Pack" (fun _ ->
+    Paket.Pack(fun config ->
+        { config with 
             Version = release.NugetVersion
-            ReleaseNotes = (toLines release.Notes) })
-    (*
-    DotNetCli.Pack (fun p ->
-        { p with
-            Project = project
-            OutputPath = buildDir
-            AdditionalArgs =
-              [ "--no-build"
-                sprintf "/p:Version=%s" release.NugetVersion
-                //"/p:ReleaseNotes=" + (toLines release.Notes)
-              ]
-        })
-    *)
+            ReleaseNotes = String.concat "\n" release.Notes
+            OutputPath = artifacts
+        }))
+
+Target "NuGet.Push" (fun _ -> Paket.Push (fun p -> { p with WorkingDir = artifacts }))
+
+// Doc generation
+
+Target "GenerateDocs" (fun _ ->
+    executeFSIWithArgs "docs/tools" "generate.fsx" ["--define:RELEASE"] [] |> ignore
 )
-
-Target "PublishNuget" (fun _ ->
-    Paket.Push(fun p ->
-        { p with
-            WorkingDir = "temp" })
-)
-
-// --------------------------------------------------------------------------------------
-// Generate the documentation
-
-Target "GenerateReferenceDocs" (fun _ ->
-    if not <| executeFSIWithArgs "docs/tools" "generate.fsx" ["--define:RELEASE"; "--define:REFERENCE"] [] then
-      failwith "generating reference documentation failed"
-)
-
-let generateHelp' fail debug =
-    let args =
-        if debug then ["--define:HELP"]
-        else ["--define:RELEASE"; "--define:HELP"]
-    if executeFSIWithArgs "docs/tools" "generate.fsx" args [] then
-        traceImportant "Help generated"
-    else
-        if fail then
-            failwith "generating help documentation failed"
-        else
-            traceImportant "generating help documentation failed"
-
-let generateHelp fail =
-    generateHelp' fail false
-
-Target "GenerateHelp" (fun _ ->
-    DeleteFile "docs/content/release-notes.md"
-    CopyFile "docs/content/" "RELEASE_NOTES.md"
-    Rename "docs/content/release-notes.md" "docs/content/RELEASE_NOTES.md"
-
-    DeleteFile "docs/content/license.md"
-    CopyFile "docs/content/" "LICENSE.txt"
-    Rename "docs/content/license.md" "docs/content/LICENSE.txt"
-
-    generateHelp true
-)
-
-Target "GenerateHelpDebug" (fun _ ->
-    DeleteFile "docs/content/release-notes.md"
-    CopyFile "docs/content/" "RELEASE_NOTES.md"
-    Rename "docs/content/release-notes.md" "docs/content/RELEASE_NOTES.md"
-
-    DeleteFile "docs/content/license.md"
-    CopyFile "docs/content/" "LICENSE.txt"
-    Rename "docs/content/license.md" "docs/content/LICENSE.txt"
-
-    generateHelp' true true
-)
-
-Target "KeepRunning" (fun _ ->    
-    use watcher = new FileSystemWatcher(DirectoryInfo("docs/content").FullName,"*.*")
-    watcher.EnableRaisingEvents <- true
-    watcher.Changed.Add(fun e -> generateHelp false)
-    watcher.Created.Add(fun e -> generateHelp false)
-    watcher.Renamed.Add(fun e -> generateHelp false)
-    watcher.Deleted.Add(fun e -> generateHelp false)
-
-    traceImportant "Waiting for help edits. Press any key to stop."
-
-    System.Console.ReadKey() |> ignore
-
-    watcher.EnableRaisingEvents <- false
-    watcher.Dispose()
-)
-
-Target "GenerateDocs" DoNothing
-
-let createIndexFsx lang =
-    let content = """(*** hide ***)
-// This block of code is omitted in the generated HTML documentation. Use 
-// it to define helpers that you do not want to show in the documentation.
-#I "../../../bin"
-
-(**
-F# Project Scaffold ({0})
-=========================
-*)
-"""
-    let targetDir = "docs/content" @@ lang
-    let targetFile = targetDir @@ "index.fsx"
-    ensureDirectory targetDir
-    System.IO.File.WriteAllText(targetFile, System.String.Format(content, lang))
-
-Target "AddLangDocs" (fun _ ->
-    let args = System.Environment.GetCommandLineArgs()
-    if args.Length < 4 then
-        failwith "Language not specified."
-
-    args.[3..]
-    |> Seq.iter (fun lang ->
-        if lang.Length <> 2 && lang.Length <> 3 then
-            failwithf "Language must be 2 or 3 characters (ex. 'de', 'fr', 'ja', 'gsw', etc.): %s" lang
-
-        let templateFileName = "template.cshtml"
-        let templateDir = "docs/tools/templates"
-        let langTemplateDir = templateDir @@ lang
-        let langTemplateFileName = langTemplateDir @@ templateFileName
-
-        if System.IO.File.Exists(langTemplateFileName) then
-            failwithf "Documents for specified language '%s' have already been added." lang
-
-        ensureDirectory langTemplateDir
-        Copy langTemplateDir [ templateDir @@ templateFileName ]
-
-        createIndexFsx lang)
-)
-
-// --------------------------------------------------------------------------------------
-// Release Scripts
 
 Target "ReleaseDocs" (fun _ ->
     let tempDocsDir = "temp/gh-pages"
+    let outputDocsDir = "docs/output"
     CleanDir tempDocsDir
     Repository.cloneSingleBranch "" (gitHome + "/" + gitName + ".git") "gh-pages" tempDocsDir
 
-    CopyRecursive "docs/output" tempDocsDir true |> tracefn "%A"
+    fullclean tempDocsDir
+    ensureDirectory outputDocsDir
+    CopyRecursive outputDocsDir tempDocsDir true |> tracefn "%A"
     StageAll tempDocsDir
-    Git.Commit.Commit tempDocsDir (sprintf "Update generated documentation for version %s" release.NugetVersion)
+    Commit tempDocsDir (sprintf "Update generated documentation for version %s" release.NugetVersion)
     Branches.push tempDocsDir
 )
 
+////----------------------------
+//// SourceLink
+
+//open SourceLink
+
+//Target "SourceLink" (fun _ ->
+//    let baseUrl = sprintf "%s/%s/{0}/%%var2%%" gitRaw project
+//    [ yield! !! "src/**/Argu.fsproj" ]
+//    |> Seq.iter (fun projFile ->
+//        let proj = VsProj.LoadRelease projFile
+//        SourceLink.Index proj.CompilesNotLinked proj.OutputFilePdb __SOURCE_DIRECTORY__ baseUrl
+//    )
+//)
+
+// Github Releases
+#nowarn "85"
 #load "paket-files/build/fsharp/FAKE/modules/Octokit/Octokit.fsx"
 open Octokit
 
-Target "Release" (fun _ ->
-    StageAll ""
+Target "ReleaseGitHub" (fun _ ->
+    let remote =
+        Git.CommandHelper.getGitResult "" "remote -v"
+        |> Seq.filter (fun (s: string) -> s.EndsWith("(push)"))
+        |> Seq.tryFind (fun (s: string) -> s.Contains(gitOwner + "/" + gitName))
+        |> function None -> gitHome + "/" + gitName | Some (s: string) -> s.Split().[0]
+
+    //StageAll ""
     Git.Commit.Commit "" (sprintf "Bump version to %s" release.NugetVersion)
-    Branches.push ""
+    Branches.pushBranch "" remote (Information.getBranchName "")
 
     Branches.tag "" release.NugetVersion
-    Branches.pushTag "" "origin" release.NugetVersion
-    
+    Branches.pushTag "" remote release.NugetVersion
+
+    let client =
+        match Environment.GetEnvironmentVariable "OctokitToken" with
+        | null -> 
+            let user =
+                match getBuildParam "github-user" with
+                | s when not (String.IsNullOrWhiteSpace s) -> s
+                | _ -> getUserInput "Username: "
+            let pw =
+                match getBuildParam "github-pw" with
+                | s when not (String.IsNullOrWhiteSpace s) -> s
+                | _ -> getUserPassword "Password: "
+
+            createClient user pw
+        | token -> createClientWithToken token
+
     // release on github
-    createClient (getBuildParamOrDefault "github-user" "") (getBuildParamOrDefault "github-pw" "")
-    |> createDraft gitOwner gitName release.NugetVersion (release.SemVer.PreRelease <> None) release.Notes 
-    // TODO: |> uploadFile "PATH_TO_FILE"    
+    client
+    |> createDraft gitOwner gitName release.NugetVersion (release.SemVer.PreRelease <> None) release.Notes
     |> releaseDraft
     |> Async.RunSynchronously
 )
 
-Target "BuildPackage" DoNothing
+Target "NetCore.Restore" (fun _ ->
+    for proj in Seq.append netCoreSrcFiles netCoreTestFiles do
+        DotNetCli.Restore(fun c -> { c with Project = proj }))
 
 // --------------------------------------------------------------------------------------
 // Run all targets by default. Invoke 'build <Target>' to override
 
-Target "All" DoNothing
+Target "Prepare" DoNothing
+Target "PrepareRelease" DoNothing
+Target "Default" DoNothing
+Target "Bundle" DoNothing
+Target "Release" DoNothing
 
 "Clean"
+  ==> "AssemblyInfo"
+  ==> "Prepare"
+  ==> "NetCore.Restore"
   ==> "Build"
+  //==> "RunTests.Net40"
+  //==> "RunTests.NetCore"
   ==> "RunTests"
-  =?> ("GenerateReferenceDocs",isLocalBuild && not isMono)
-  =?> ("GenerateDocs",isLocalBuild && not isMono)
-  ==> "All"
-  =?> ("ReleaseDocs",isLocalBuild && not isMono)
+  ==> "Default"
 
-"All" 
-  ==> "NuGet"
-  ==> "BuildPackage"
-
-"CleanDocs"
-  ==> "GenerateHelp"
-  ==> "GenerateReferenceDocs"
+"Default"
+  ==> "PrepareRelease"
+  ==> "NuGet.Pack"
   ==> "GenerateDocs"
+  //==> "SourceLink"
+  ==> "Bundle"
 
-"CleanDocs"
-  ==> "GenerateHelpDebug"
-
-"GenerateHelp"
-  ==> "KeepRunning"
-    
-"ReleaseDocs"
+"Bundle"
+  ==> "ReleaseDocs"
+  ==> "ReleaseGitHub"
+  ==> "NuGet.Push"
   ==> "Release"
 
-"BuildPackage"
-  ==> "PublishNuget"
-  ==> "Release"
-
-RunTargetOrDefault "All"
+RunTargetOrDefault "Default"

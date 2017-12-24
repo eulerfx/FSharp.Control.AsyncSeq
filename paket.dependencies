@@ -1,22 +1,21 @@
-source https://api.nuget.org/v3/index.json
-redirects: on
-storage: none
+framework: auto-detect
+source https://www.nuget.org/api/v2
+redirects: force
 
-nuget FSharp.Core
+nuget FSharp.Core >= 4.2 lowest_matching:true
 
 group Build
-    source https://api.nuget.org/v3/index.json
+    source https://www.nuget.org/api/v2
 
-    nuget FAKE
+    nuget FAKE ~> 4.0
     nuget FSharp.Formatting
-    nuget Nuget.CommandLine
     github fsharp/FAKE modules/Octokit/Octokit.fsx
 
 group Test
-    source https://api.nuget.org/v3/index.json
+    source https://www.nuget.org/api/v2
     storage: none
 
-    nuget FSharp.Core
+    nuget FSharp.Core ~> 4.0
     nuget Microsoft.NET.Test.Sdk
     nuget NUnit
     nuget NUnit.Runners
