@@ -1,6 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;net452</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;net45</TargetFrameworks>
     <Authors>Tomas Petricek;Don Syme;Lev Gorodinski</Authors>
     <Summary>Asynchronous sequences for F#</Summary>
     <Description>Asynchronous sequences for F#</Description>
@@ -18,5 +19,6 @@
     <Compile Include="AsyncSeq.fsi" />
     <Compile Include="AsyncSeq.fs" />
     <None Include="paket.references" />
+    <None Include="paket.template" />
   </ItemGroup>
 </Project>

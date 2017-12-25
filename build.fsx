@@ -9,30 +9,21 @@ open Fake.Git
 open Fake.ReleaseNotesHelper
 open System
 open System.IO
+open Fake.Paket
 
 // --------------------------------------------------------------------------------------
 // START TODO: Provide project-specific details below
 // --------------------------------------------------------------------------------------
 
-// The name of the project
-// (used by attributes in AssemblyInfo, name of a NuGet package and directory in 'src')
+
 let project = "src/FSharp.Control.AsyncSeq"
-
-// File system information 
 let solutionFile = "FSharp.Control.AsyncSeq.sln"
-
 let buildDir = "bin"
-
-// Git configuration (used for publishing documentation in gh-pages branch)
-// The profile where the project is posted
 let gitOwner = "fsprojects" 
 let gitHome = "https://github.com/" + gitOwner
-
-// The name of the project on GitHub
 let gitName = "FSharp.Control.AsyncSeq"
-
-// The url for the raw files hosted
-let gitRaw = environVarOrDefault "gitRaw" "https://raw.github.com/fsprojects"
+let testDir = "tests/FSharp.Control.AsyncSeq.Tests"
+let nugetDir = "src/FSharp.Control.AsyncSeq/bin"
 
 // --------------------------------------------------------------------------------------
 // END TODO: The rest of the file includes standard build steps
@@ -67,23 +58,16 @@ Target "RunTests" (fun _ ->
     try
         DotNetCli.Test(fun p ->
             { p with
-                Project = "tests/FSharp.Control.AsyncSeq.Tests"
+                Project = testDir
                 TimeOut = TimeSpan.FromMinutes 20. })
     finally
-        AppVeyor.UploadTestResultsXml AppVeyor.TestResultsType.NUnit "bin"
+        AppVeyor.UploadTestResultsXml AppVeyor.TestResultsType.NUnit buildDir
 )
 
 // --------------------------------------------------------------------------------------
 // Build a NuGet package
 
-Target "NuGet" (fun _ ->
-
-    //Paket.Pack (fun p ->
-    //    { p with
-    //        OutputPath = buildDir
-    //        Version = release.NugetVersion
-    //        ReleaseNotes = (toLines release.Notes) })
-    
+Target "NuGet" (fun _ ->    
     DotNetCli.Pack (fun p ->
         { p with
             Project = project
@@ -98,8 +82,8 @@ Target "NuGet" (fun _ ->
 
 Target "PublishNuget" (fun _ ->
     Paket.Push(fun p ->
-        { p with
-            WorkingDir = "temp" })
+        { p with          
+            WorkingDir = nugetDir })
 )
 
 // --------------------------------------------------------------------------------------

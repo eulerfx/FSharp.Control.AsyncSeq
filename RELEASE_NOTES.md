@@ -1,3 +1,6 @@
+### 2.0.20-alpha01 - 25.12.2017
+* .NET 452 -> .NET 45
+
 ### 2.0.19 - 24.12.2017
 * Target .NET Standard
 * Pack using dotnet pack
