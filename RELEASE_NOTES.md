@@ -1,3 +1,7 @@
+### 2.0.19 - 24.12.2017
+* Target .NET Standard
+* Pack using dotnet pack
+
 ### 2.0.19-alpha01 - 22.12.2017
 * Target .NET Standard
 
