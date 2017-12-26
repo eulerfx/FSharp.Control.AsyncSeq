@@ -22,8 +22,8 @@ group Test
     nuget NUnit.Runners
     nuget NUnit3TestAdapter
 
-group Net40
-  framework: net40
+group Net45
+  framework: net45
   source https://www.nuget.org/api/v2
   redirects: force
 
